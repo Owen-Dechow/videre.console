@@ -1,17 +1,16 @@
 mod cells;
-mod display;
+mod connections;
+mod value;
 
 use std::io::Error;
 
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use serde_json::Value;
 
-use crate::{cells::VidereMap, display::Display};
+use crate::cells::VidereMap;
 
 fn run() -> Result<(), Error> {
     enable_raw_mode()?;
-
-    let mut display = Display::new(size()?);
 
     return Ok(());
 }
@@ -44,7 +43,7 @@ const DATA: &str = r#"
             "SECOND"
         ],
         [
-            "THIRD"
+            "THIRD", null
         ]
     ],
     "example": {

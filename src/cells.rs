@@ -1,144 +1,9 @@
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 use unicode_width::UnicodeWidthStr;
 
-struct LayerConnector {
-    chars: Vec<Vec<&'static str>>,
-    from: Vec<usize>,
-    to: Vec<usize>,
-}
-
-impl LayerConnector {
-    const FORWARD: &str = "─";
-    const TURN_UP: &str = "╯";
-    const TURN_DOWN: &str = "╮";
-    const UP: &str = "│";
-    const SPACE: &str = " ";
-    const TURN_FORWAR_FROM_DOWN: &str = "╰";
-    const TURN_FORWAR_FROM_UP: &str = "╭";
-
-    fn new(height: usize, from: Vec<usize>) -> Self {
-        Self {
-            chars: vec![vec![Self::SPACE; from.len()]; height],
-            from,
-            to: Vec::new(),
-        }
-    }
-
-    fn resolve_connection(&mut self, con: (usize, usize), up: bool) {
-        println!("{con:?}");
-        let mut row = con.0;
-        let mut col = 0;
-        let mut last_was_forward = true;
-        let target = con.1;
-
-        while row != target || col != self.chars[0].len() {
-            let (new_row, new_col, new_is_forward) =
-                if row > target && self.chars[row - 1][col] == Self::SPACE {
-                    (row - 1, col, false)
-                } else if row < target && self.chars[row + 1][col] == Self::SPACE {
-                    (row + 1, col, false)
-                } else {
-                    (row, col + 1, true)
-                };
-
-            let unit = match (last_was_forward, new_is_forward, up) {
-                (true, true, _) => Self::FORWARD,
-                (true, false, true) => Self::TURN_UP,
-                (true, false, false) => Self::TURN_DOWN,
-                (false, true, true) => Self::TURN_FORWAR_FROM_UP,
-                (false, true, false) => Self::TURN_FORWAR_FROM_DOWN,
-                (false, false, _) => Self::UP,
-            };
-
-            self.chars[row][col] = unit;
-            row = new_row;
-            col = new_col;
-            last_was_forward = new_is_forward;
-        }
-    }
-
-    fn resolve(&mut self) {
-        let mut upper_connections = Vec::new();
-        let mut lower_connections = Vec::new();
-
-        for (from, to) in self.from.iter().zip(&self.to) {
-            if from > to {
-                upper_connections.push((*from, *to));
-            } else {
-                lower_connections.push((*from, *to));
-            }
-        }
-
-        for con in upper_connections {
-            self.resolve_connection(con, true);
-        }
-
-        for con in lower_connections.iter().rev() {
-            self.resolve_connection(*con, false);
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum VidereValue {
-    Number(Number),
-    String(String),
-    Bool(bool),
-    Null,
-    Array,
-    Object,
-}
-
-impl Display for VidereValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                VidereValue::Number(number) => number.to_string(),
-                VidereValue::String(s) => s.to_owned(),
-                VidereValue::Bool(b) => b.to_string(),
-                VidereValue::Null => String::from("null"),
-                VidereValue::Array => String::from("[]"),
-                VidereValue::Object => String::from("{}"),
-            }
-        )
-    }
-}
-
-impl VidereValue {
-    fn from_json_val(map: &mut VidereMap, layer: usize, val: Value) -> Self {
-        match val {
-            Value::Null => VidereValue::Null,
-            Value::Bool(b) => VidereValue::Bool(b),
-            Value::Number(n) => VidereValue::Number(n),
-            Value::String(s) => VidereValue::String(s),
-            Value::Array(arr) => {
-                map.add_arr_to_layer(layer + 1, arr);
-                VidereValue::Array
-            }
-            Value::Object(obj) => {
-                map.add_obj_to_layer(layer + 1, obj);
-                VidereValue::Object
-            }
-        }
-    }
-
-    fn get_min_width(&self) -> usize {
-        match self {
-            VidereValue::Number(number) => number.to_string().len(),
-            VidereValue::String(s) => s.width(),
-            VidereValue::Bool(b) => match b {
-                true => 4,
-                false => 5,
-            },
-            VidereValue::Null => 4,
-            VidereValue::Array | VidereValue::Object => 2,
-        }
-    }
-}
+use crate::{connections::LayerConnector, value::VidereValue};
 
 #[derive(Debug)]
 pub enum VidereCell {
@@ -149,7 +14,8 @@ pub enum VidereCell {
 impl VidereCell {
     const WALLS_WIDTH: usize = 2;
 
-    const TOP_LEFT: &str = "╭";
+    const TOP_LEFT: &str = "┬";
+    const ORIGIN_TOP_LEFT: &str = "╭";
     const TOP_RIGHT: &str = "╮";
     const BOTTOM_LEFT: &str = "╰";
     const BOTTOM_RIGHT: &str = "╯";
@@ -157,6 +23,7 @@ impl VidereCell {
     const VERTICAL_EDGE: &str = "│";
     const CROSS_UP: &str = "┴";
     const CROSS_DOWN: &str = "┬";
+    const CROSS_RIGHT: &str = "├";
 
     fn get_min_width(&self) -> usize {
         Self::WALLS_WIDTH
@@ -184,8 +51,12 @@ impl VidereCell {
             }
     }
 
-    fn get_top_row(width: usize, cross: Option<usize>) -> String {
-        let mut row = String::from(Self::TOP_LEFT);
+    fn get_top_row(width: usize, cross: Option<usize>, layer: usize) -> String {
+        let mut row = String::from(match layer == 0 {
+            true => Self::ORIGIN_TOP_LEFT,
+            false => Self::TOP_LEFT,
+        });
+
         match cross {
             Some(cross) => {
                 row.push_str(&Self::HORIZONTAL_EDGE.repeat(cross));
@@ -212,19 +83,27 @@ impl VidereCell {
         return row;
     }
 
-    fn get_rows(&self, width: usize, from_offset: usize) -> (Vec<String>, Vec<usize>) {
+    fn get_rows(
+        &self,
+        width: usize,
+        from_offset: usize,
+        layer: usize,
+    ) -> (Vec<String>, Vec<usize>) {
         let mut rows = Vec::new();
         let mut from = Vec::new();
 
         match self {
             VidereCell::Obj(values) => {
                 let min_key_width = values.iter().map(|k| k.0.width()).max().unwrap_or(0);
-                rows.push(Self::get_top_row(width, Some(min_key_width)));
+                rows.push(Self::get_top_row(width, Some(min_key_width), layer));
 
                 for (key, val) in values {
-                    if let VidereValue::Object | VidereValue::Array = val {
+                    let right_edge = if let VidereValue::Object | VidereValue::Array = val {
                         from.push(rows.len() + from_offset);
-                    }
+                        Self::CROSS_RIGHT
+                    } else {
+                        Self::VERTICAL_EDGE
+                    };
 
                     let mut row = String::from(Self::VERTICAL_EDGE);
                     row.push_str(&key);
@@ -234,22 +113,25 @@ impl VidereCell {
                         width - val.get_min_width() - Self::WALLS_WIDTH - min_key_width - 1,
                     ));
                     row.push_str(&val.to_string());
-                    row.push_str(Self::VERTICAL_EDGE);
+                    row.push_str(right_edge);
                     rows.push(row);
                 }
                 rows.push(Self::get_bottom_row(width, Some(min_key_width)));
             }
             VidereCell::Arr(values) => {
-                rows.push(Self::get_top_row(width, None));
+                rows.push(Self::get_top_row(width, None, layer));
                 for val in values {
-                    if let VidereValue::Object | VidereValue::Array = val {
+                    let right_edge = if let VidereValue::Object | VidereValue::Array = val {
                         from.push(rows.len() + from_offset);
-                    }
+                        Self::CROSS_RIGHT
+                    } else {
+                        Self::VERTICAL_EDGE
+                    };
 
                     let mut row = String::from(Self::VERTICAL_EDGE);
                     row.push_str(&" ".repeat(width - val.get_min_width() - Self::WALLS_WIDTH));
                     row.push_str(&val.to_string());
-                    row.push_str(Self::VERTICAL_EDGE);
+                    row.push_str(right_edge);
                     rows.push(row);
                 }
                 rows.push(Self::get_bottom_row(width, None));
@@ -286,6 +168,7 @@ impl VidereLayer {
         &self,
         height: usize,
         mut connections: LayerConnector,
+        layer: usize,
     ) -> (Vec<String>, Vec<usize>) {
         let width = self.get_min_width();
 
@@ -294,7 +177,7 @@ impl VidereLayer {
         let mut from = Vec::new();
         for cell in &self.cells {
             to.push(rows.len());
-            let (mut cell_rows, mut cell_from) = cell.get_rows(width, rows.len());
+            let (mut cell_rows, mut cell_from) = cell.get_rows(width, rows.len(), layer);
             rows.append(&mut cell_rows);
             from.append(&mut cell_from);
         }
@@ -306,7 +189,7 @@ impl VidereLayer {
         connections.to = to;
         connections.resolve();
         for (idx, row) in rows.iter_mut().enumerate() {
-            let prefix = connections.chars[idx].join("");
+            let prefix = connections.get_row(idx);
             row.insert_str(0, &prefix);
         }
 
@@ -332,7 +215,7 @@ impl VidereMap {
         }
     }
 
-    fn add_obj_to_layer(&mut self, layer: usize, obj: Map<String, Value>) -> usize {
+    pub fn add_obj_to_layer(&mut self, layer: usize, obj: Map<String, Value>) -> usize {
         let mut entries = Vec::new();
 
         for (key, val) in obj {
@@ -347,7 +230,7 @@ impl VidereMap {
         return layer.cells.len() - 1;
     }
 
-    fn add_arr_to_layer(&mut self, layer: usize, arr: Vec<Value>) -> usize {
+    pub fn add_arr_to_layer(&mut self, layer: usize, arr: Vec<Value>) -> usize {
         let mut entries = Vec::new();
 
         for val in arr {
@@ -375,9 +258,9 @@ impl VidereMap {
         let mut layer_strings = Vec::new();
 
         let mut from = Vec::new();
-        for layer in &self.layers {
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
             let connections = LayerConnector::new(height, from);
-            let (rows, layer_from) = layer.get_rows(height, connections);
+            let (rows, layer_from) = layer.get_rows(height, connections, layer_idx);
             layer_strings.push(rows);
             from = layer_from
         }
