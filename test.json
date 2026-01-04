@@ -1,0 +1,33 @@
+{
+    "long_array_example": [
+        "text_a",
+        "text_b",
+        "text_c",
+        "text_d",
+        "text_e",
+        "text_f",
+        "text_g",
+        "text_h",
+        [
+            "FIRST"
+        ],
+        [
+            "SECOND"
+        ],
+        [
+            "THIRD"
+        ]
+    ],
+    "example": {
+        "test": "This is some test data",
+        "empty_table": {},
+        "empty_array": [],
+        "nested_table": {
+            "array": [
+                "data"
+            ],
+            "string": "MY_\nSTRING",
+            "data": 5
+        }
+    }
+}
